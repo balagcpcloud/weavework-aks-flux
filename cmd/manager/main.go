@@ -92,6 +92,7 @@ func main() {
 		allowBreakTheGlass       bool
 		clusterDomain            string
 		aclOptions               acl.Options
+		allowCrossNamespaceRefs  bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
@@ -117,7 +118,12 @@ func main() {
 	clientOptions.BindFlags(flag.CommandLine)
 	logOptions.BindFlags(flag.CommandLine)
 	leaderElectionOptions.BindFlags(flag.CommandLine)
+	// this adds the flag `--no-cross-namespace-refs`, for backward-compatibility of deployments that use that Flux-like flag.
 	aclOptions.BindFlags(flag.CommandLine)
+	// this flag exists so that the default is to _disallow_ cross-namespace refs. If supplied, it'll override `--no-cross-namespace-refs`; in other words, you can supply `--allow-cross-namespace-refs` with or without a value, and it will be observed.
+	flag.BoolVar(&allowCrossNamespaceRefs, "allow-cross-namespace-refs", false,
+		"Enable following cross-namespace references. Overrides --no-cross-namespace-refs")
+
 	flag.Parse()
 
 	ctrl.SetLogger(logger.NewLogger(logOptions))
@@ -186,6 +192,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Cross-namespace refs enabled:
+	//
+	// --allow... \ --no... | true | false |  - |
+	// ---------------------|------|-------|----|
+	//     true             |  t   |   t   |  t |
+	//     false            |  f   |   f   |  f |
+	//     -                |  f   |   t*  |  f |
+	//
+	// '-' means "not supplied"
+	// * is the only place the value of `allowCrossNamespaceRefs` (as defaulted or set by the flag) needs adjusting.
+	if !flag.Changed("allow-cross-namespace-refs") && flag.Changed("no-cross-namespace-refs") {
+		allowCrossNamespaceRefs = !aclOptions.NoCrossNamespaceRefs
+	}
+
 	reconciler := &controllers.TerraformReconciler{
 		Client:                   mgr.GetClient(),
 		Scheme:                   mgr.GetScheme(),
@@ -198,7 +218,7 @@ func main() {
 		RunnerGRPCMaxMessageSize: runnerGRPCMaxMessageSize,
 		AllowBreakTheGlass:       allowBreakTheGlass,
 		ClusterDomain:            clusterDomain,
-		NoCrossNamespaceRefs:     aclOptions.NoCrossNamespaceRefs,
+		NoCrossNamespaceRefs:     !allowCrossNamespaceRefs,
 	}
 
 	if err = reconciler.SetupWithManager(mgr, concurrent, httpRetry); err != nil {
